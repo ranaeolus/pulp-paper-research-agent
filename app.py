@@ -1,13 +1,24 @@
 import streamlit as st
 
 from src.config import get_settings
-from src.database import initialize_database
+from src.database import (
+    complete_discovery_session,
+    create_discovery_session,
+    initialize_database,
+    save_research_workflow,
+)
 from src.logging_config import configure_logging
 from src.research_planner import (
     DeterministicResearchPlanner,
     ResearchPlan,
     ResearchRequest,
 )
+from src.search_provider import (
+    SearchProviderError,
+    TavilySearchProvider,
+    discover_sources,
+)
+from src.search_strategy import SearchStrategy, generate_search_strategy
 
 
 DECISION_CONTEXTS = (
@@ -20,28 +31,52 @@ DECISION_CONTEXTS = (
     "Executive briefing",
 )
 RESEARCH_DEPTHS = ("Rapid scan", "Standard research", "Deep research")
+OUTPUT_LANGUAGES = ("Chinese", "English", "Bilingual")
+
+SECTION_HEADINGS = {
+    "English": (
+        "Restated research objective", "Scope and boundaries", "Key definitions",
+        "Key hypotheses to test", "Research questions and sub-questions",
+        "Required data and indicators", "Recommended source hierarchy",
+        "Analytical frameworks", "Known risks and possible data gaps",
+        "Proposed final deliverable structure",
+    ),
+    "Chinese": (
+        "重述研究目标", "范围与边界", "关键定义", "待检验的核心假设", "研究问题与子问题",
+        "所需数据与指标", "建议的来源层级", "分析框架", "已知风险与潜在数据缺口", "建议的最终交付结构",
+    ),
+    "Bilingual": (
+        "重述研究目标 / Restated research objective", "范围与边界 / Scope and boundaries",
+        "关键定义 / Key definitions", "待检验的核心假设 / Key hypotheses to test",
+        "研究问题与子问题 / Research questions and sub-questions",
+        "所需数据与指标 / Required data and indicators",
+        "建议的来源层级 / Recommended source hierarchy", "分析框架 / Analytical frameworks",
+        "风险与数据缺口 / Risks and data gaps", "交付结构 / Deliverable structure",
+    ),
+}
 
 
-def render_research_plan(plan: ResearchPlan) -> None:
+def render_research_plan(plan: ResearchPlan, language: str) -> None:
     """Render a structured research plan without embedding planning logic."""
-    st.subheader("1. Restated research objective")
+    headings = SECTION_HEADINGS[language]
+    st.subheader(f"1. {headings[0]}")
     st.write(plan.restated_objective)
 
     sections = (
-        ("2. Scope and boundaries", plan.scope_and_boundaries),
-        ("3. Key definitions", plan.key_definitions),
-        ("4. Key hypotheses to test", plan.hypotheses_to_test),
+        (f"2. {headings[1]}", plan.scope_and_boundaries),
+        (f"3. {headings[2]}", plan.key_definitions),
+        (f"4. {headings[3]}", plan.hypotheses_to_test),
     )
     for title, items in sections:
         st.subheader(title)
         for item in items:
             st.markdown(f"- {item}")
 
-    st.subheader("5. Research questions and sub-questions")
+    st.subheader(f"5. {headings[4]}")
     for item in plan.research_questions:
         st.markdown(f"- **{item.question}** Variables: {', '.join(item.variables)}.")
 
-    st.subheader("6. Required data and indicators")
+    st.subheader(f"6. {headings[5]}")
     for item in plan.required_data:
         st.markdown(
             f"- **{item.indicator}:** {item.purpose}. Unit: {item.unit}. "
@@ -49,10 +84,10 @@ def render_research_plan(plan: ResearchPlan) -> None:
         )
 
     trailing_sections = (
-        ("7. Recommended source hierarchy", plan.recommended_source_hierarchy),
-        ("8. Analytical frameworks", plan.analytical_frameworks),
-        ("9. Known risks and possible data gaps", plan.risks_and_data_gaps),
-        ("10. Proposed final deliverable structure", plan.proposed_deliverable_structure),
+        (f"7. {headings[6]}", plan.recommended_source_hierarchy),
+        (f"8. {headings[7]}", plan.analytical_frameworks),
+        (f"9. {headings[8]}", plan.risks_and_data_gaps),
+        (f"10. {headings[9]}", plan.proposed_deliverable_structure),
     )
     for title, items in trailing_sections:
         st.subheader(title)
@@ -60,11 +95,11 @@ def render_research_plan(plan: ResearchPlan) -> None:
             st.markdown(f"- {item}")
 
 
-def render_research_planner() -> None:
+def render_research_planner(database_path) -> None:
     """Render the offline Research Planner form and its latest result."""
     st.header("Research Planner")
     st.write(
-        "Define how an industry question should be researched. Version 0.2 creates "
+        "Define how an industry question should be researched. Version 0.3 creates "
         "a structured plan locally; it does not answer the question or call an API."
     )
 
@@ -81,6 +116,9 @@ def render_research_planner() -> None:
         desired_depth = st.selectbox(
             "Desired depth", RESEARCH_DEPTHS, index=1
         )
+        output_language = st.selectbox(
+            "Output language / 输出语言", OUTPUT_LANGUAGES, index=0
+        )
         submitted = st.form_submit_button("Generate Research Plan", type="primary")
 
     if submitted:
@@ -94,20 +132,97 @@ def render_research_planner() -> None:
                     "" if decision_context == "Not specified" else decision_context
                 ),
                 desired_depth=desired_depth,
+                output_language=output_language,
             )
-            st.session_state["research_plan"] = (
-                DeterministicResearchPlanner().generate_plan(request)
+            plan = DeterministicResearchPlanner().generate_plan(request)
+            strategy = generate_search_strategy(request, plan)
+            _, _, strategy_id = save_research_workflow(
+                database_path, request, plan, strategy
+            )
+            st.session_state.update(
+                research_request=request, research_plan=plan,
+                search_strategy=strategy, strategy_id=strategy_id,
+                source_results=[], output_language=output_language,
             )
         except ValueError as error:
             st.error(str(error))
 
     if "research_plan" in st.session_state:
         st.divider()
-        render_research_plan(st.session_state["research_plan"])
+        render_research_plan(
+            st.session_state["research_plan"],
+            st.session_state.get("output_language", "Chinese"),
+        )
+
+
+def render_source_discovery(settings) -> None:
+    """Review a strategy and run bounded Tavily candidate discovery."""
+    st.header("Source Discovery")
+    st.info(
+        "Source discovery identifies candidate evidence. It does not by itself "
+        "verify that every claim or number is correct."
+    )
+    strategy: SearchStrategy | None = st.session_state.get("search_strategy")
+    if strategy is None:
+        st.write("Generate a research plan first to create a bilingual search strategy.")
+        return
+
+    st.subheader("Proposed search strategy")
+    for query in strategy.queries:
+        st.markdown(
+            f"**P{query.priority} · {query.language} · {query.expected_source_type.value}**  \n"
+            f"`{query.query_text}`  \n{query.purpose}"
+        )
+
+    provider = TavilySearchProvider(api_key=settings.tavily_api_key)
+    if not provider.configured:
+        st.warning(
+            "TAVILY_API_KEY is not configured. Source discovery is unavailable, "
+            "but bilingual planning and query generation remain fully usable offline."
+        )
+    if st.button("Start Web Discovery", disabled=not provider.configured):
+        session_id = create_discovery_session(
+            settings.database_path, st.session_state["strategy_id"]
+        )
+        try:
+            with st.spinner("Discovering candidate sources..."):
+                results = discover_sources(
+                    provider, strategy.queries, settings.max_search_queries,
+                    settings.max_results_per_query,
+                )
+            complete_discovery_session(settings.database_path, session_id, results)
+            st.session_state["source_results"] = results
+        except SearchProviderError as error:
+            complete_discovery_session(
+                settings.database_path, session_id, [], "failed", str(error)
+            )
+            st.error(str(error))
+
+    results = st.session_state.get("source_results", [])
+    if results:
+        st.subheader(f"Candidate sources ({len(results)})")
+        grouped: dict[tuple[str, int, str], list] = {}
+        for result in results:
+            key = (
+                result.related_sub_question, result.source_tier,
+                result.expected_source_category.value,
+            )
+            grouped.setdefault(key, []).append(result)
+        for (sub_question, tier, category), items in grouped.items():
+            st.markdown(f"### {sub_question} — Tier {tier} — {category}")
+            for result in items:
+                st.markdown(f"**[{result.title}]({result.url})**")
+                st.caption(
+                    f"{result.source_domain} · {result.detected_date or 'Date unavailable'} "
+                    f"· rank {result.search_rank}"
+                )
+                st.write(result.classification_rationale)
+                st.write(f"Query: {result.originating_query}")
+                st.write(result.snippet or "No snippet available.")
 
 
 def main() -> None:
-    """Render the Version 0.1 application homepage."""
+    """Render the Version 0.3 application."""
     settings = get_settings()
     logger = configure_logging(settings)
     initialize_database(settings.database_path)
@@ -120,21 +235,24 @@ def main() -> None:
     )
 
     st.title(settings.app_name)
-    st.caption("Version 0.2")
+    st.caption("Version 0.3")
 
-    home_tab, planner_tab = st.tabs(("Home", "Research Planner"))
+    home_tab, planner_tab, discovery_tab = st.tabs(
+        ("Home", "Research Planner", "Source Discovery")
+    )
     with home_tab:
         st.header("Status")
-        st.success("Version 0.2 Research Planner is operational.")
+        st.success("Version 0.3 bilingual planning and source discovery are operational.")
         st.write(
-            "The application generates structured research plans locally. It does not "
-            "perform research, retrieve sources, or generate findings."
+            "The application generates structured research plans locally and can discover "
+            "candidate web sources through Tavily. It does not verify claims or generate findings."
         )
 
         st.header("Architecture")
         architecture = {
             "User interface": "Streamlit application shell",
             "Planning": "Typed deterministic industry research planner",
+            "Discovery": "Bilingual search strategy and provider-neutral source normalization",
             "Configuration": "Environment-based typed settings",
             "Persistence": "SQLite initialization and schema management",
             "Observability": "Console and rotating-file logging",
@@ -148,7 +266,6 @@ def main() -> None:
             """
 - Industry research orchestration
 - Anthropic Claude analysis
-- Tavily source discovery
 - PDF document ingestion with PyMuPDF
 - Evidence management and citations
 - Market, supply-chain, investment, and strategy analysis
@@ -157,7 +274,10 @@ def main() -> None:
         )
 
     with planner_tab:
-        render_research_planner()
+        render_research_planner(settings.database_path)
+
+    with discovery_tab:
+        render_source_discovery(settings)
 
 
 if __name__ == "__main__":

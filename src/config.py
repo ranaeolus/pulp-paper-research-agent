@@ -20,11 +20,14 @@ class Settings:
     """Immutable runtime settings for the application foundation."""
 
     app_name: str = "Pulp & Paper Industry Research Agent"
-    app_version: str = "0.2"
+    app_version: str = "0.3"
     app_env: str = "development"
     log_level: str = "INFO"
     database_path: Path = PROJECT_ROOT / "data" / "research_agent.db"
     log_path: Path = PROJECT_ROOT / "logs" / "research_agent.log"
+    tavily_api_key: str | None = None
+    max_search_queries: int = 8
+    max_results_per_query: int = 5
 
 
 def _project_path(value: str) -> Path:
@@ -43,4 +46,7 @@ def get_settings() -> Settings:
         database_path=_project_path(
             os.getenv("DATABASE_PATH", "data/research_agent.db")
         ),
+        tavily_api_key=os.getenv("TAVILY_API_KEY") or None,
+        max_search_queries=int(os.getenv("MAX_SEARCH_QUERIES", "8")),
+        max_results_per_query=int(os.getenv("MAX_RESULTS_PER_QUERY", "5")),
     )

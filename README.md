@@ -1,136 +1,160 @@
-# Pulp & Paper Industry Research Agent — Version 0.2
+# Pulp & Paper Industry Research Agent — Version 0.3
 
-Version 0.2 adds the first functional module: an offline Research Planner for pulp and
-paper industry questions. It converts a question and optional scope into a structured,
-professional plan describing how the topic should be researched.
+Version 0.3 provides bilingual research planning and candidate web-source discovery for
+pulp and paper industry questions. It defines how a question should be researched; it
+does not produce a final research conclusion.
 
-## Current capabilities
+## Capabilities
 
-- Streamlit homepage and Research Planner form
-- Deterministic topic detection across major pulp and paper value-chain segments
-- Typed research requests, sub-questions, data requirements, and research plans
-- Ten-section plans covering scope, hypotheses, data, sources, frameworks, and gaps
-- Environment-based configuration
-- Application logging
-- SQLite schema initialization
-- Automated tests with pytest
+- Deterministic Chinese and English industry-term detection
+- Chinese, English, or bilingual ten-section research plans
+- Targeted Chinese and English search-query strategies
+- Optional Tavily web discovery behind a provider-neutral interface
+- Normalized URLs, duplicate removal, duplicate-domain counts, and preliminary source tiers
+- SQLite persistence for requests, plans, strategies, discovery sessions, and candidates
+- Fully usable offline planner mode when no API key is configured
 
-The local planner uses declared keyword rules and topic-specific templates. It works
-without network access or an API key and produces the same output for the same input.
+Version 0.3 intentionally excludes PDF processing, final report generation, claim
+verification, authentication, multi-agent frameworks, monitoring, and deployment.
 
-Version 0.2 intentionally does **not** answer the research question. It does not perform
-web search, call an LLM, read PDFs, validate evidence, generate a final report, or make
-investment recommendations. A future LLM planner interface exists, but its implementation
-deliberately raises `NotImplementedError` and is not used by the application.
-
-## Requirements
+## Requirements and setup
 
 - Python 3.12 (supported production version; recorded in `.python-version`)
 - Git
-
-## Setup
 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env
 ```
 
-To run the test suite, install the development requirements instead:
+For runtime-only installation, use `pip install -r requirements.txt`.
 
-```bash
-pip install -r requirements-dev.txt
+## Configuration
+
+The application works without an API key. To enable source discovery, set the Tavily
+key only in the ignored `.env` file:
+
+```text
+TAVILY_API_KEY=your-key-here
+MAX_SEARCH_QUERIES=8
+MAX_RESULTS_PER_QUERY=5
 ```
 
-The API-key entries in `.env.example` are reserved placeholders. API integrations are
-not implemented and no API keys are required for Version 0.2. Never commit `.env`.
+Never commit `.env`. API keys are read at runtime and are never stored in SQLite.
 
-## Run the application
+## Run
 
 ```bash
 streamlit run app.py
 ```
 
-The application initializes `data/research_agent.db` and writes rotating logs to
-`logs/research_agent.log` by default.
+1. Open **Research Planner**.
+2. Enter a Chinese or English question and optional scope.
+3. Select Chinese, English, or Bilingual output; Chinese is the UI default.
+4. Generate the plan.
+5. Open **Source Discovery** to review the bilingual query strategy.
+6. If Tavily is configured, start bounded web discovery.
 
-Open the **Research Planner** tab, enter a required research question and any optional
-scope, choose the desired depth, and select **Generate Research Plan**.
+Without `TAVILY_API_KEY`, the planner and query strategy remain available and the UI
+clearly explains that discovery is disabled. No invented results are generated.
 
-## Run tests
+## Deploy to Render
+
+The repository includes `render.yaml` for a Render Python web service. Render uses the
+project's `.python-version` file to select Python 3.12.
+
+1. Push the repository to GitHub.
+2. In Render, choose **New > Blueprint** and connect this repository.
+3. Review the `pulp-paper-research-agent` service and deploy it.
+4. Optionally add `TAVILY_API_KEY` in the Render dashboard to enable web discovery.
+5. Optionally override `MAX_SEARCH_QUERIES` and `MAX_RESULTS_PER_QUERY` there.
+
+Render provides `PORT` automatically. The service starts with:
+
+```bash
+streamlit run app.py --server.address 0.0.0.0 --server.port $PORT
+```
+
+Do not add API keys to `render.yaml`. They must be configured as secret environment
+variables in the Render dashboard.
+
+The current SQLite database (`data/research_agent.db`) and application log
+(`logs/research_agent.log`) use the service's local filesystem. Render's default service
+filesystem is ephemeral, so these files are runtime conveniences only and are **not**
+relied upon as permanent storage. Deploys, restarts, or instance replacement may discard
+them. Durable history will require a managed database or persistent disk in a later version.
+
+## Source tiers
+
+- **Tier 1 — Primary and authoritative:** government, customs, statistics agencies,
+  multilaterals, exchanges, regulatory filings, and apparent official disclosures.
+- **Tier 2 — Professional secondary:** established industry publications, recognized
+  research organizations, and reputable financial or business media.
+- **Tier 3 — Supplementary:** general media, trade sites, marketing pages, and specialist blogs.
+- **Tier 4 — Unverified leads:** forums, social media, and aggregated or unattributed content.
+
+Tiering is preliminary. A professional-looking domain does not prove that an individual
+claim, number, or document is reliable. Every candidate still requires evidence review.
+
+## Persistence
+
+The application creates `data/research_agent.db` and `logs/research_agent.log`. SQLite
+schema version 3 stores the submitted request, generated plan, search strategy, discovery
+session status, normalized candidates, and timestamps. Initialization is idempotent and
+does not erase prior records. Runtime database and log files are ignored by Git.
+
+## Tests
 
 ```bash
 pytest
 ```
 
+Tests use temporary databases and mocked Tavily clients; they make no real external API calls.
+
 ## Project structure
 
 ```text
 .
-├── .env.example             # Safe environment-variable template
-├── .gitignore               # Local, generated, and secret files excluded from Git
-├── .python-version          # Supported production Python version
-├── .streamlit/config.toml   # Streamlit theme and server settings
-├── app.py                   # Streamlit entry point and Version 0.1 homepage
-├── data/                    # Runtime SQLite database location
-├── logs/                    # Runtime application logs
-├── requirements.txt         # Runtime dependencies
-├── requirements-dev.txt     # Runtime and test dependencies
+├── app.py
+├── requirements.txt
+├── requirements-dev.txt
 ├── src/
-│   ├── __init__.py          # Package metadata
-│   ├── config.py            # Typed environment configuration
-│   ├── database.py          # Idempotent SQLite schema initialization
-│   ├── logging_config.py    # Console and rotating-file logging setup
-│   └── research_planner.py  # Typed deterministic planning logic
+│   ├── config.py
+│   ├── database.py
+│   ├── logging_config.py
+│   ├── research_planner.py
+│   ├── search_provider.py
+│   └── search_strategy.py
 └── tests/
-    ├── test_app.py          # Application import test
-    ├── test_config.py       # Configuration default tests
-    ├── test_database.py     # Database initialization test
-    ├── test_logging.py      # Logging initialization tests
-    └── test_research_planner.py # Planner behavior and structure tests
 ```
 
-## Research Planner example
+## Example
 
-Sample input:
+Input:
 
 ```text
-Research question: How will Vietnam woodchip export supply evolve?
-Geographic scope: Vietnam and key Asian destinations
-Product segment: Plantation woodchips
-Time horizon: 2025-2030
-Decision context: Procurement
-Desired depth: Standard research
+研究问题：越南制浆木片出口供应未来五年如何变化？
+地理范围：越南及中国
+时间范围：2025-2030
+决策场景：采购
+输出语言：中文
 ```
 
-Abbreviated output:
-
-```text
-1. Restated research objective
-   Develop an evidence-based approach to evaluate Vietnam woodchip export supply.
-2. Scope and boundaries
-   Vietnam and key Asian destinations; 2025-2030; separate actuals and forecasts.
-4. Key hypotheses to test
-   Export availability may be constrained by harvest economics, plantation maturity,
-   domestic demand, and port logistics.
-6. Required data and indicators
-   Plantation area, harvest cycle, yield, domestic use, exports, and port throughput,
-   with units and geographic/time dimensions stated explicitly.
-```
+The planner produces Chinese scope definitions, hypotheses to test, sub-questions, data
+requirements with units and periods, source priorities, frameworks, risks, and a proposed
+deliverable structure. The search strategy separately proposes targeted Chinese and English
+queries for plantation supply, harvest, exports, port logistics, company disclosures, and
+official statistics.
 
 ## Current limitations
 
-- Topic recognition is keyword-based and currently English-first.
-- Plans are structured baselines, not substitutes for expert scoping on complex mandates.
-- The planner does not retrieve evidence or verify whether required data is available.
-- No plan history or user-submitted research content is stored in Version 0.2.
-
-## Architecture principles
-
-- Keep UI, configuration, persistence, and future domain logic separate.
-- Read deployment-specific values from environment variables.
-- Make infrastructure initialization idempotent.
-- Avoid API calls and other external side effects during module import.
-- Add tests alongside each module as the platform grows.
+- Terminology detection is rule-based; ambiguous questions may need explicit segment input.
+- Chinese explanatory templates cover the supported industry topics but are not machine translation.
+- Tavily candidates are discovery leads, not verified evidence.
+- Date availability depends on provider metadata.
+- Source tiering is heuristic and preliminary.
+- The system does not fetch full documents, reconcile conflicting claims, or generate conclusions.
+- The LLM planner interface remains intentionally unimplemented.
