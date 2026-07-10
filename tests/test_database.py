@@ -15,4 +15,4 @@ def test_initialize_database_creates_schema(tmp_path: Path) -> None:
         row = connection.execute(
             "SELECT value FROM app_metadata WHERE key = 'schema_version'"
         ).fetchone()
-    assert row == ("3",)
+    assert row == ("4",)

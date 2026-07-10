@@ -1,4 +1,5 @@
 import streamlit as st
+from dataclasses import replace
 
 from src.config import get_settings
 from src.database import (
@@ -8,6 +9,8 @@ from src.database import (
     save_research_workflow,
 )
 from src.logging_config import configure_logging
+from src.industry_knowledge.models import InterpretationOverrides
+from src.industry_knowledge.registry import PACKS, interpret_request
 from src.research_planner import (
     DeterministicResearchPlanner,
     ResearchPlan,
@@ -94,6 +97,19 @@ def render_research_plan(plan: ResearchPlan, language: str) -> None:
         for item in items:
             st.markdown(f"- {item}")
 
+    if plan.scenario_structure:
+        scenario_title = "情景设计" if language == "Chinese" else (
+            "情景设计 / Scenario design" if language == "Bilingual" else "Scenario design"
+        )
+        st.subheader(f"8A. {scenario_title}")
+        for scenario in plan.scenario_structure:
+            st.markdown(f"- **{scenario.name}**")
+            st.write(f"Assumptions / 假设: {'; '.join(scenario.assumptions)}")
+            st.write(f"Key variables / 关键变量: {', '.join(scenario.key_variables)}")
+            st.write(f"Triggers / 触发因素: {'; '.join(scenario.triggers)}")
+            st.write(f"Evidence / 所需证据: {', '.join(scenario.evidence_required)}")
+            st.write(f"Implications / 采购含义: {'; '.join(scenario.decision_implications)}")
+
 
 def render_research_planner(database_path) -> None:
     """Render the offline Research Planner form and its latest result."""
@@ -134,14 +150,16 @@ def render_research_planner(database_path) -> None:
                 desired_depth=desired_depth,
                 output_language=output_language,
             )
-            plan = DeterministicResearchPlanner().generate_plan(request)
-            strategy = generate_search_strategy(request, plan)
+            interpretation = interpret_request(request)
+            plan = DeterministicResearchPlanner().generate_plan(request, interpretation)
+            strategy = generate_search_strategy(request, plan, interpretation)
             _, _, strategy_id = save_research_workflow(
-                database_path, request, plan, strategy
+                database_path, request, plan, strategy, interpretation
             )
             st.session_state.update(
                 research_request=request, research_plan=plan,
                 search_strategy=strategy, strategy_id=strategy_id,
+                industry_interpretation=interpretation,
                 source_results=[], output_language=output_language,
             )
         except ValueError as error:
@@ -167,11 +185,44 @@ def render_source_discovery(settings) -> None:
         st.write("Generate a research plan first to create a bilingual search strategy.")
         return
 
+    interpretation = st.session_state["industry_interpretation"]
+    st.subheader("Industry interpretation")
+    col1, col2 = st.columns(2)
+    col1.markdown(f"**Primary research object:** {interpretation.primary_topic}")
+    col1.markdown(f"**Secondary object:** {interpretation.secondary_topic or 'None detected'}")
+    col1.markdown(f"**Supply geography:** {interpretation.supply_geography}")
+    col1.markdown(f"**Demand geography:** {interpretation.demand_geography}")
+    col2.markdown(f"**Decision objective:** {interpretation.decision_objective}")
+    col2.markdown(f"**Value-chain relationship:** {interpretation.value_chain_relationship}")
+    col2.markdown(f"**Detection confidence:** {interpretation.confidence:.0%}")
+    col2.markdown(f"**Detection rationale:** {interpretation.rationale}")
+    st.markdown(f"**Value chain:** {' → '.join(interpretation.causal_chain)}")
+
+    with st.expander("Edit interpretation and regenerate"):
+        with st.form("interpretation_override_form"):
+            topic_ids = tuple(PACKS)
+            primary = st.selectbox("Primary topic", topic_ids, index=topic_ids.index(interpretation.primary_topic))
+            secondary_options = ("",) + topic_ids
+            secondary = st.selectbox("Secondary topic", secondary_options, index=secondary_options.index(interpretation.secondary_topic) if interpretation.secondary_topic in secondary_options else 0)
+            supply = st.text_input("Supply geography", interpretation.supply_geography)
+            demand = st.text_input("Demand geography", interpretation.demand_geography)
+            context = st.selectbox("Decision objective", DECISION_CONTEXTS, index=DECISION_CONTEXTS.index(interpretation.decision_objective) if interpretation.decision_objective in DECISION_CONTEXTS else 0)
+            regenerate = st.form_submit_button("Apply Overrides and Regenerate")
+        if regenerate:
+            request = replace(st.session_state["research_request"], decision_context=context)
+            corrected = interpret_request(request, InterpretationOverrides(primary, secondary, supply, demand, context))
+            plan = DeterministicResearchPlanner().generate_plan(request, corrected)
+            strategy = generate_search_strategy(request, plan, corrected)
+            _, _, strategy_id = save_research_workflow(settings.database_path, request, plan, strategy, corrected)
+            st.session_state.update(research_request=request, research_plan=plan, search_strategy=strategy, strategy_id=strategy_id, industry_interpretation=corrected, source_results=[])
+            st.rerun()
+
     st.subheader("Proposed search strategy")
     for query in strategy.queries:
         st.markdown(
-            f"**P{query.priority} · {query.language} · {query.expected_source_type.value}**  \n"
-            f"`{query.query_text}`  \n{query.purpose}"
+            f"**P{query.priority} · {query.primary_or_supporting} · {query.language} · "
+            f"{query.analytical_dimension} · {query.expected_source_type.value}**  \n"
+            f"`{query.query_text}`  \n{query.purpose}  \n_Rationale: {query.rationale}_"
         )
 
     provider = TavilySearchProvider(api_key=settings.tavily_api_key)
@@ -235,14 +286,14 @@ def main() -> None:
     )
 
     st.title(settings.app_name)
-    st.caption("Version 0.3")
+    st.caption("Version 0.3.1")
 
     home_tab, planner_tab, discovery_tab = st.tabs(
         ("Home", "Research Planner", "Source Discovery")
     )
     with home_tab:
         st.header("Status")
-        st.success("Version 0.3 bilingual planning and source discovery are operational.")
+        st.success("Version 0.3.1 industry-aware planning and source discovery are operational.")
         st.write(
             "The application generates structured research plans locally and can discover "
             "candidate web sources through Tavily. It does not verify claims or generate findings."

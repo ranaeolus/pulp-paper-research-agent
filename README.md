@@ -1,6 +1,6 @@
-# Pulp & Paper Industry Research Agent — Version 0.3
+# Pulp & Paper Industry Research Agent — Version 0.3.1
 
-Version 0.3 provides bilingual research planning and candidate web-source discovery for
+Version 0.3.1 provides industry-aware bilingual research planning and candidate web-source discovery for
 pulp and paper industry questions. It defines how a question should be researched; it
 does not produce a final research conclusion.
 
@@ -13,6 +13,9 @@ does not produce a final research conclusion.
 - Normalized URLs, duplicate removal, duplicate-domain counts, and preliminary source tiers
 - SQLite persistence for requests, plans, strategies, discovery sessions, and candidates
 - Fully usable offline planner mode when no API key is configured
+- Semantic interpretation of primary/secondary topics, geography roles, causal chain, and decision objective
+- Editable interpretation overrides that regenerate and persist the plan and strategy
+- Lightweight topic knowledge packs that guide research design without asserting market facts
 
 Version 0.3 intentionally excludes PDF processing, final report generation, claim
 verification, authentication, multi-agent frameworks, monitoring, and deployment.
@@ -58,6 +61,12 @@ streamlit run app.py
 5. Open **Source Discovery** to review the bilingual query strategy.
 6. If Tavily is configured, start bounded web discovery.
 
+Before the search strategy, the application shows its **Industry interpretation**:
+primary and secondary objects, supply and demand geographies, decision objective,
+value-chain relationship, causal chain, confidence, and rationale. Expand **Edit
+interpretation and regenerate** to override these fields. The corrected interpretation,
+plan, and query strategy are saved together.
+
 Without `TAVILY_API_KEY`, the planner and query strategy remain available and the UI
 clearly explains that discovery is disabled. No invented results are generated.
 
@@ -102,7 +111,7 @@ claim, number, or document is reliable. Every candidate still requires evidence 
 ## Persistence
 
 The application creates `data/research_agent.db` and `logs/research_agent.log`. SQLite
-schema version 3 stores the submitted request, generated plan, search strategy, discovery
+schema version 4 stores the submitted request, industry interpretation, generated plan, search strategy, discovery
 session status, normalized candidates, and timestamps. Initialization is idempotent and
 does not erase prior records. Runtime database and log files are ignored by Git.
 
@@ -125,6 +134,13 @@ Tests use temporary databases and mocked Tavily clients; they make no real exter
 │   ├── config.py
 │   ├── database.py
 │   ├── logging_config.py
+│   ├── industry_knowledge/
+│   │   ├── models.py
+│   │   ├── registry.py
+│   │   ├── woodchips.py
+│   │   ├── market_pulp.py
+│   │   ├── paperboard.py
+│   │   └── chemicals.py
 │   ├── research_planner.py
 │   ├── search_provider.py
 │   └── search_strategy.py
@@ -149,9 +165,37 @@ deliverable structure. The search strategy separately proposes targeted Chinese 
 queries for plantation supply, harvest, exports, port logistics, company disclosures, and
 official statistics.
 
+## Industry knowledge layer
+
+Knowledge packs are small, typed collections of research guidance. They contain terminology,
+value-chain links, analytical dimensions, indicators and units, price-point definitions,
+source/entity/infrastructure categories, causal mechanisms, frameworks, query templates,
+hypotheses, data-quality risks, scenario variables, and decision-context adaptations.
+They contain no current market numbers or unsupported conclusions.
+
+Current packs:
+
+- **Woodchips** — detailed resource-to-mill chain, export logistics, procurement competition,
+  FOB/CIF/delivered-cost logic, alternative origins, and scenario design.
+- **Market pulp** — baseline capacity, downtime, inventory, cost, price, and demand-cycle guidance.
+- **Packaging paper and board** — baseline supply-demand, margin, grade, and competitor guidance.
+- **Pulp and paper chemicals** — baseline application demand, technology, supplier, and competition guidance.
+
+Topic interpretation scores declared synonyms, distinguishes primary from secondary objects,
+and assigns geography roles using the wording and scope. For example, a Vietnam woodchip
+supply question linked to new Chinese chemical-pulp capacity assigns Vietnam as supply/export
+geography and China as demand/import geography. Confidence and rationale remain visible so
+professional judgment can correct the interpretation.
+
+To add a future pack, create one `KnowledgePack` module under `src/industry_knowledge/`,
+register it in `registry.py`, and add focused deterministic tests. Keep packs as research
+guidance rather than a factual market database.
+
 ## Current limitations
 
 - Terminology detection is rule-based; ambiguous questions may need explicit segment input.
+- Geography-role inference currently covers a focused set of common English and Chinese geographies.
+- Knowledge packs guide scoping but do not replace analyst judgment or external evidence.
 - Chinese explanatory templates cover the supported industry topics but are not machine translation.
 - Tavily candidates are discovery leads, not verified evidence.
 - Date availability depends on provider metadata.

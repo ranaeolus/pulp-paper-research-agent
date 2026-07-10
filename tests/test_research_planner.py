@@ -93,6 +93,7 @@ def test_structured_output_is_stable() -> None:
         "required_data",
         "recommended_source_hierarchy",
         "analytical_frameworks",
+        "scenario_structure",
         "risks_and_data_gaps",
         "proposed_deliverable_structure",
     )

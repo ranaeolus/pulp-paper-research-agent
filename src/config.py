@@ -20,7 +20,7 @@ class Settings:
     """Immutable runtime settings for the application foundation."""
 
     app_name: str = "Pulp & Paper Industry Research Agent"
-    app_version: str = "0.3"
+    app_version: str = "0.3.1"
     app_env: str = "development"
     log_level: str = "INFO"
     database_path: Path = PROJECT_ROOT / "data" / "research_agent.db"

@@ -6,6 +6,9 @@ from dataclasses import asdict, dataclass, replace
 from itertools import zip_longest
 from typing import Protocol
 
+from src.industry_knowledge.models import IndustryInterpretation
+from src.industry_knowledge.registry import get_knowledge_pack, interpret_request
+
 
 @dataclass(frozen=True, slots=True)
 class ResearchRequest:
@@ -44,6 +47,16 @@ class DataRequirement:
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchScenario:
+    name: str
+    assumptions: tuple[str, ...]
+    key_variables: tuple[str, ...]
+    triggers: tuple[str, ...]
+    evidence_required: tuple[str, ...]
+    decision_implications: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ResearchPlan:
     """Structured output describing how a question should be researched."""
 
@@ -55,6 +68,7 @@ class ResearchPlan:
     required_data: tuple[DataRequirement, ...]
     recommended_source_hierarchy: tuple[str, ...]
     analytical_frameworks: tuple[str, ...]
+    scenario_structure: tuple[ResearchScenario, ...]
     risks_and_data_gaps: tuple[str, ...]
     proposed_deliverable_structure: tuple[str, ...]
 
@@ -66,7 +80,7 @@ class ResearchPlan:
 class ResearchPlanner(Protocol):
     """Interface implemented by local and future LLM-backed planners."""
 
-    def generate_plan(self, request: ResearchRequest) -> ResearchPlan:
+    def generate_plan(self, request: ResearchRequest, interpretation: IndustryInterpretation | None = None) -> ResearchPlan:
         """Create a research plan without answering the research question."""
 
 
@@ -124,14 +138,17 @@ class DeterministicResearchPlanner:
         "Tier 5 — secondary summaries; do not rely on them for material claims without corroboration",
     )
 
-    def generate_plan(self, request: ResearchRequest) -> ResearchPlan:
+    def generate_plan(self, request: ResearchRequest, interpretation: IndustryInterpretation | None = None) -> ResearchPlan:
+        interpretation = interpretation or interpret_request(request)
         if request.output_language == "Chinese":
-            return self._generate_chinese(request)
-        if request.output_language == "Bilingual":
+            plan = self._generate_chinese(request)
+        elif request.output_language == "Bilingual":
             english = self._generate_english(replace(request, output_language="English"))
             chinese = self._generate_chinese(replace(request, output_language="Chinese"))
-            return self._combine_bilingual(chinese, english)
-        return self._generate_english(request)
+            plan = self._combine_bilingual(chinese, english)
+        else:
+            plan = self._generate_english(request)
+        return self._apply_industry_guidance(plan, request, interpretation)
 
     def _generate_english(self, request: ResearchRequest) -> ResearchPlan:
         topics = detect_topics(request)
@@ -159,6 +176,7 @@ class DeterministicResearchPlanner:
             required_data=self._data_requirements(topics, horizon),
             recommended_source_hierarchy=self._source_hierarchy,
             analytical_frameworks=self._frameworks(topics),
+            scenario_structure=(),
             risks_and_data_gaps=self._risks(topics),
             proposed_deliverable_structure=(
                 "Executive summary: verified findings, implications, and confidence levels",
@@ -173,6 +191,7 @@ class DeterministicResearchPlanner:
     def _generate_chinese(self, request: ResearchRequest) -> ResearchPlan:
         topics = detect_topics(request)
         geography = request.geographic_scope.strip() or "问题所涉及的地区"
+        geography = {"Vietnam and China": "越南与中国", "China": "中国", "Vietnam": "越南", "Global": "全球"}.get(geography, geography)
         horizon = request.time_horizon.strip() or "最新可得历史数据及明确标注的前瞻期"
         segment = request.value_chain_segment.strip() or "、".join(TOPIC_LABEL_ZH[topic] for topic in topics)
         context = {
@@ -250,6 +269,7 @@ class DeterministicResearchPlanner:
                 "四级：一般媒体、营销页面、博客、论坛及聚合内容，仅作为待核实线索",
             ),
             analytical_frameworks=tuple(frameworks), risks_and_data_gaps=tuple(risks),
+            scenario_structure=(),
             proposed_deliverable_structure=(
                 "执行摘要：已验证发现、决策含义及置信度", "范围、定义、方法、单位、币种及来源质量说明",
                 "围绕核心研究问题组织的市场与价值链证据", "假设检验：支持、否定或尚未解决",
@@ -279,9 +299,88 @@ class DeterministicResearchPlanner:
             pair_questions(), pair_data(),
             pair(chinese.recommended_source_hierarchy, english.recommended_source_hierarchy),
             pair(chinese.analytical_frameworks, english.analytical_frameworks),
+            (),
             pair(chinese.risks_and_data_gaps, english.risks_and_data_gaps),
             pair(chinese.proposed_deliverable_structure, english.proposed_deliverable_structure),
         )
+
+    @staticmethod
+    def _apply_industry_guidance(
+        plan: ResearchPlan, request: ResearchRequest, interpretation: IndustryInterpretation
+    ) -> ResearchPlan:
+        pack = get_knowledge_pack(interpretation.primary_topic)
+        chinese = request.output_language == "Chinese"
+        bilingual = request.output_language == "Bilingual"
+        def localized(zh: str, en: str) -> str:
+            return zh if chinese else (f"{zh}\n{en}" if bilingual else en)
+
+        questions = list(plan.research_questions)
+        data = list(plan.required_data)
+        frameworks = list(plan.analytical_frameworks)
+        hypotheses = list(plan.hypotheses_to_test)
+        deliverable = list(plan.proposed_deliverable_structure)
+        risks = list(plan.risks_and_data_gaps)
+
+        if interpretation.primary_topic == "woodchips":
+            hypotheses.extend(localized(
+                "可出口木片供应取决于可采林资源、国内消耗与物流能力，而非人工林总面积本身。",
+                "Exportable chip supply depends on harvestable resource, domestic use, and logistics—not plantation area alone.",
+            ) for _ in (0,))
+            hypotheses.append(localized(
+                "中国新增化学浆产能只有在项目投产爬坡并进入原料采购后，才会转化为木片竞争需求。",
+                "New Chinese chemical-pulp capacity becomes competing woodchip demand only as projects commission, ramp up, and procure fiber.",
+            ))
+            questions.extend((
+                ResearchSubQuestion(localized("越南人工林资源如何转化为可持续采伐量？", "How does Vietnam plantation resource translate into sustainable harvest?"), ("人工林面积", "林龄", "单产", "轮伐期", "认证") if chinese else ("plantation area", "age class", "yield", "rotation", "certification")),
+                ResearchSubQuestion(localized("国内消费后有多少木片形成可竞争的出口供应？", "How much chip supply remains contestable for export after domestic use?"), ("木片产量", "国内消费", "可出口余量") if chinese else ("chip production", "domestic consumption", "exportable surplus")),
+                ResearchSubQuestion(localized("港口、堆场、装船效率、船型与运费形成哪些瓶颈？", "Which port, stockyard, loading, vessel, and freight constraints limit exports?"), ("吞吐量", "装船效率", "堆存", "吃水", "运费") if chinese else ("throughput", "loading rate", "storage", "draft", "freight")),
+                ResearchSubQuestion(localized("哪些现有与新增浆厂将成为竞争买家，其木片需求和采购区域如何重叠？", "Which current and future mills are competing buyers, and where do their demand and sourcing regions overlap?"), ("投产", "爬坡", "木片单耗", "自有供应", "长协供应", "港口重叠") if chinese else ("commissioning", "ramp-up", "wood intensity", "captive supply", "contracted supply", "port overlap")),
+                ResearchSubQuestion(localized("FOB、CIF、海关单价与到厂成本如何形成并为何不可直接比较？", "How are FOB, CIF, customs unit value, and mill-delivered cost formed and why are they not directly comparable?"), ("FOB", "港口处理", "运费", "CIF", "汇率", "质量", "合同条款") if chinese else ("FOB", "handling", "freight", "CIF", "FX", "quality", "contract terms")),
+                ResearchSubQuestion(localized("澳大利亚、泰国、马来西亚、印度尼西亚、巴西或中国国内供应能否替代？", "Can Australia, Thailand, Malaysia, Indonesia, Brazil, or domestic China substitute as supply origins?"), ("可得量", "质量", "运费", "到岸成本平价", "切换约束") if chinese else ("availability", "quality", "freight", "delivered-cost parity", "switching constraints")),
+            ))
+            indicator_zh = (
+                ("人工林面积、林龄、单产与认证", "估算可持续可采资源"), ("采伐量与木片产量", "从生物资源推导木片产出"),
+                ("国内消费与可出口余量", "区分资源量与可竞争出口供应"), ("出口量、目的地与海关单价", "衡量贸易量、金额与隐含价格"),
+                ("港口能力、装船效率、堆存、船型与吃水", "检验实物出口瓶颈"), ("运费、航程与到厂成本", "核对FOB、运费、CIF及到厂成本"),
+                ("浆项目产能、爬坡与木片单耗", "估算未来竞争需求"),
+            )
+            data.extend(DataRequirement(indicator_zh[n][0] if chinese else i.name, indicator_zh[n][1] if chinese else i.purpose, i.unit, request.time_horizon or ("明确的历史及前瞻期" if chinese else "Defined historical and forward period"), (("越南" if interpretation.supply_geography == "Vietnam" else interpretation.supply_geography), ("中国" if interpretation.demand_geography == "China" else interpretation.demand_geography))) for n, i in enumerate(pack.indicators))
+            frameworks.extend(pack.frameworks)
+            risks.extend(pack.data_quality_risks)
+        else:
+            hypotheses.extend(pack.hypotheses)
+            data.extend(
+                DataRequirement(
+                    indicator.name, indicator.purpose, indicator.unit,
+                    request.time_horizon or "Defined historical and forward period",
+                    (interpretation.supply_geography, interpretation.demand_geography),
+                )
+                for indicator in pack.indicators
+            )
+            frameworks.extend(pack.frameworks)
+            risks.extend(pack.data_quality_risks)
+
+        frameworks.append(localized(
+            "价值链与交易点映射：识别所有权、合同关系、实物流瓶颈、定价点、提前期、产能约束及利润分配。",
+            "Value-chain and transaction-point map covering ownership, contracts, physical bottlenecks, pricing points, lead times, capacity constraints, and margin capture.",
+        ))
+        adaptations = pack.decision_adaptations.get(interpretation.decision_objective, ())
+        if adaptations:
+            procurement_zh = ("供应可得性", "竞争买家与项目地图", "可竞争供应", "港口重叠与物流瓶颈", "FOB/CIF/到厂成本形成", "合同（长协）与现货策略", "来源多元化", "谈判议价能力", "风险触发因素与监测指标")
+            localized_adaptations = procurement_zh if chinese and interpretation.decision_objective == "Procurement" else adaptations
+            deliverable = [localized("决策导向的执行摘要", "Decision-oriented executive summary")] + [localized(f"重点：{item}", f"Priority: {item}") for item in localized_adaptations] + deliverable
+
+        scenarios: tuple[ResearchScenario, ...] = ()
+        future_terms = ("future", "202", "未来", "新增", "价格", "supply", "demand", "供给", "需求", "竞争")
+        if request.desired_depth in ("Standard research", "Deep research") and any(term in request.research_question.casefold() for term in future_terms):
+            scenario_zh = ("可采人工林资源量", "国内木材需求", "可出口余量", "港口吞吐", "运费与汇率", "中国项目投产与爬坡", "木片单耗", "替代来源到岸成本", "政策与认证约束")
+            common_evidence = scenario_zh if chinese else tuple(pack.scenario_variables)
+            scenarios = (
+                ResearchScenario(localized("基准情景", "Base case"), (localized("按已验证的项目进度与中性供应假设。", "Use verified project schedules and neutral supply assumptions."),), common_evidence, (localized("项目按计划爬坡，供应与物流无重大扰动。", "Projects ramp as scheduled with no major supply or logistics shock."),), common_evidence, (localized("据此制定基准采购量、合同组合与监测阈值。", "Set baseline procurement volumes, contract mix, and monitoring thresholds."),)),
+                ResearchScenario(localized("供应偏紧/高价情景", "Tight-supply / high-price case"), (localized("可出口量下降、竞争买家需求上升或物流受限。", "Exportable supply falls, competing demand rises, or logistics tighten."),), common_evidence, (localized("采伐/天气/政策冲击、项目提前爬坡、港口拥堵或运费上涨。", "Harvest/weather/policy shock, faster ramp-up, congestion, or freight increase."),), common_evidence, (localized("提高供应保障、锁量、来源多元化与价格风险管理。", "Increase supply security, volume coverage, origin diversification, and price-risk controls."),)),
+                ResearchScenario(localized("供应宽松/低价情景", "Loose-supply / low-price case"), (localized("可出口量增加、项目延期或替代来源竞争增强。", "Exportable supply rises, projects delay, or alternative origins compete."),), common_evidence, (localized("高采伐量、需求推迟、运费下降或替代来源到岸成本改善。", "Higher harvest, delayed demand, lower freight, or improved alternative-origin parity."),), common_evidence, (localized("保留现货灵活性并利用议价窗口，避免过度锁定高价。", "Preserve spot flexibility and negotiation leverage; avoid excessive high-price coverage."),)),
+            )
+        return replace(plan, hypotheses_to_test=tuple(hypotheses), research_questions=tuple(questions), required_data=tuple(data), analytical_frameworks=tuple(frameworks), scenario_structure=scenarios, risks_and_data_gaps=tuple(risks), proposed_deliverable_structure=tuple(deliverable))
 
     @staticmethod
     def _definitions(topics: tuple[str, ...]) -> tuple[str, ...]:
@@ -372,5 +471,5 @@ class DeterministicResearchPlanner:
 class LLMResearchPlanner:
     """Reserved interface implementation for a future LLM integration."""
 
-    def generate_plan(self, request: ResearchRequest) -> ResearchPlan:
+    def generate_plan(self, request: ResearchRequest, interpretation: IndustryInterpretation | None = None) -> ResearchPlan:
         raise NotImplementedError("LLM-backed planning is not implemented in Version 0.3.")

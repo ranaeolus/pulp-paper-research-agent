@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 
 def connect_database(database_path: Path) -> sqlite3.Connection:
@@ -43,6 +43,13 @@ def initialize_database(database_path: Path) -> None:
                 request_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
                 plan_json TEXT NOT NULL,
+                FOREIGN KEY(request_id) REFERENCES research_requests(id)
+            );
+            CREATE TABLE IF NOT EXISTS industry_interpretations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                interpretation_json TEXT NOT NULL,
                 FOREIGN KEY(request_id) REFERENCES research_requests(id)
             );
             CREATE TABLE IF NOT EXISTS search_strategies (
@@ -86,7 +93,8 @@ def initialize_database(database_path: Path) -> None:
 
 
 def save_research_workflow(
-    database_path: Path, request: Any, plan: Any, strategy: Any
+    database_path: Path, request: Any, plan: Any, strategy: Any,
+    interpretation: Any | None = None,
 ) -> tuple[int, int, int]:
     """Persist a request, generated plan, and search strategy atomically."""
     initialize_database(database_path)
@@ -97,6 +105,11 @@ def save_research_workflow(
             (now, json.dumps(asdict(request), ensure_ascii=False)),
         )
         request_id = int(request_cursor.lastrowid)
+        if interpretation is not None:
+            connection.execute(
+                "INSERT INTO industry_interpretations(request_id, created_at, interpretation_json) VALUES (?, ?, ?)",
+                (request_id, now, json.dumps(interpretation.to_dict(), ensure_ascii=False)),
+            )
         plan_cursor = connection.execute(
             "INSERT INTO research_plans(request_id, created_at, plan_json) VALUES (?, ?, ?)",
             (request_id, now, json.dumps(plan.to_dict(), ensure_ascii=False)),

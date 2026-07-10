@@ -31,7 +31,7 @@ def test_schema_upgrade_and_workflow_persistence(tmp_path: Path) -> None:
     complete_discovery_session(path, session_id, [result])
 
     with connect_database(path) as connection:
-        assert connection.execute("SELECT value FROM app_metadata WHERE key='schema_version'").fetchone() == ("3",)
+        assert connection.execute("SELECT value FROM app_metadata WHERE key='schema_version'").fetchone() == ("4",)
         assert connection.execute("SELECT value FROM app_metadata WHERE key='legacy_record'").fetchone() == ("preserve-me",)
         assert (request_id, plan_id, strategy_id) == (1, 1, 1)
         assert connection.execute("SELECT status FROM discovery_sessions").fetchone() == ("completed",)
